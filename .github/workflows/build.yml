@@ -1,92 +1,92 @@
-name: Build SukiSU Kernel (tejas101k - Automatic)
+
+name: Build Vayu Kernel - Baseline
 
 on:
   workflow_dispatch:
 
-env:
-  ARCH: arm64
-  CROSS_COMPILE: aarch64-linux-gnu-
-  CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
+
     steps:
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          git make bc bison flex libssl-dev libelf-dev \
-          build-essential lzop cpio device-tree-compiler python3 \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          clang-14 lld-14 llvm-14 python2 lz4
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
 
-    - name: Clone tejas101k/sixteen kernel
-      run: |
-        git clone https://github.com/tejas101k/kernel_xiaomi_vayu -b sixteen --depth=1 kernel
-        cd kernel
-        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig missing" && exit 1)
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git make bc bison flex \
+            libssl-dev libelf-dev \
+            build-essential lzop cpio \
+            device-tree-compiler python3 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            clang-14 lld-14 llvm-14 \
+            lz4 zip
 
-    - name: Integrate SukiSU Ultra
-      run: |
-        cd kernel
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-        rm -rf KernelSU/.git
+      - name: Verify source
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+          test -f Makefile
+          test -f arch/arm64/configs/vayu_defconfig
+          echo "vayu_defconfig found"
 
-    - name: Configure kernel (with silent defaults)
-      run: |
-        cd kernel
-        make vayu_defconfig
-        # Disable problematic GPU drivers that cause build errors
-        scripts/config --disable CONFIG_DRM_MSM
-        scripts/config --disable CONFIG_DRM
-        # Enable required SukiSU features
-        scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-        scripts/config --disable CONFIG_DEBUG_INFO
-        scripts/config --disable CONFIG_HID_TRACE
-        scripts/config --disable CONFIG_HID_DEBUG
-        # Accept all remaining defaults automatically
-        make olddefconfig
+      - name: Configure baseline kernel
+        run: |
+          make vayu_defconfig
+          make olddefconfig
+          grep -E 'CONFIG_DRM=|CONFIG_DRM_MSM=' .config || true
 
-    - name: Build kernel (full build)
-      run: |
-        cd kernel
-        make -j$(nproc) \
-          CC=clang-14 \
-          LD=ld.lld-14 \
-          AR=llvm-ar-14 \
-          NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14
+      - name: Build kernel
+        run: |
+          make -j"$(nproc)" \
+            CC=clang-14 \
+            LD=ld.lld-14 \
+            AR=llvm-ar-14 \
+            NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14
 
-    - name: Locate kernel image
-      id: find
-      run: |
-        cd kernel
-        # Find any kernel image
-        if [ -f arch/arm64/boot/Image.gz-dtb ]; then
-          cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
-        elif [ -f arch/arm64/boot/Image.gz ]; then
-          cp arch/arm64/boot/Image.gz ../Image.gz-dtb
-        elif [ -f arch/arm64/boot/Image ]; then
-          cp arch/arm64/boot/Image ../Image.gz-dtb
-        else
-          echo "No kernel image found. Directory contents:"
-          ls -la arch/arm64/boot/ || true
-          exit 1
-        fi
+      - name: Collect build outputs
+        if: success()
+        run: |
+          mkdir -p artifacts
+          found=0
 
-    - name: Package with AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
-        cp Image.gz-dtb AnyKernel3/
-        cd AnyKernel3
-        zip -r9 "SukiSU_vayu_$(date +%Y%m%d_%H%M%S).zip" . -x ".git*"
+          for f in \
+            arch/arm64/boot/Image \
+            arch/arm64/boot/Image.gz \
+            arch/arm64/boot/Image.gz-dtb
+          do
+            if [ -f "$f" ]; then
+              cp "$f" artifacts/
+              found=1
+            fi
+          done
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: SukiSU_Kernel_vayu
-        path: AnyKernel3/*.zip
-        retention-days: 7
+          find arch/arm64/boot/dts \
+            -type f -name '*.dtb' \
+            -exec cp --parents {} artifacts/ \; \
+            2>/dev/null || true
+
+          if [ "$found" -ne 1 ]; then
+            echo "No recognized kernel image found"
+            ls -lah arch/arm64/boot/
+            exit 1
+          fi
+
+          find artifacts -type f -exec ls -lh {} \;
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vayu-baseline-kernel
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
