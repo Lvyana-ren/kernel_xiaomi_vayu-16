@@ -29,39 +29,96 @@ jobs:
             clang-14 lld-14 llvm-14 \
             lz4 zip
 
-      - name: Verify source
+      - name: Inspect kernel source
         run: |
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Branch: $GITHUB_REF_NAME"
-          test -f Makefile
-          test -f arch/arm64/configs/vayu_defconfig
-          echo "vayu_defconfig found"
+          echo "Commit: $(git rev-parse --short HEAD)"
 
-      - name: Configure baseline kernel
+          test -f Makefile || {
+            echo "::error::Kernel Makefile missing"
+            exit 1
+          }
+
+          test -d arch/arm64/configs || {
+            echo "::error::ARM64 config directory missing"
+            exit 1
+          }
+
+          echo "=== Vayu-related configurations ==="
+          find arch/arm64/configs -type f \
+            -iname '*vayu*' -print
+
+          echo "=== Available defconfig files ==="
+          find arch/arm64/configs -type f \
+            -name '*defconfig' -print | sort
+
+      - name: Select device configuration
+        id: config
+        shell: bash
         run: |
-          make vayu_defconfig
-          make olddefconfig
-          grep -E 'CONFIG_DRM=|CONFIG_DRM_MSM=' .config || true
+          mapfile -t configs < <(
+            find arch/arm64/configs -type f \
+              -iname '*vayu*defconfig' | sort
+          )
+
+          if [ "${#configs[@]}" -eq 0 ]; then
+            echo "::error::No Vayu defconfig found."
+            echo "Inspect the configuration list in the previous step."
+            exit 1
+          fi
+
+          if [ "${#configs[@]}" -gt 1 ]; then
+            echo "::error::Multiple Vayu defconfigs found."
+            printf '%s\n' "${configs[@]}"
+            echo "Stopping to avoid selecting the wrong configuration."
+            exit 1
+          fi
+
+          config="${configs[0]#arch/arm64/configs/}"
+          config="${config%.?}"
+
+          echo "Selected defconfig: $config"
+          echo "defconfig=$config" >> "$GITHUB_OUTPUT"
+
+      - name: Configure kernel
+        run: |
+          mkdir -p out
+
+          make O=out ARCH=arm64 \
+            "${{ steps.config.outputs.defconfig }}"
+
+          make O=out ARCH=arm64 olddefconfig
+
+          echo "=== Important configuration ==="
+          grep -E \
+            'CONFIG_ARM64=|CONFIG_DRM=|CONFIG_DRM_MSM=' \
+            out/.config || true
 
       - name: Build kernel
         run: |
           make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
             CC=clang-14 \
             LD=ld.lld-14 \
             AR=llvm-ar-14 \
             NM=llvm-nm-14 \
-            OBJCOPY=llvm-objcopy-14
+            OBJCOPY=llvm-objcopy-14 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: Collect build outputs
         if: success()
+        shell: bash
         run: |
           mkdir -p artifacts
           found=0
 
           for f in \
-            arch/arm64/boot/Image \
-            arch/arm64/boot/Image.gz \
-            arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/Image \
+            out/arch/arm64/boot/Image.gz \
+            out/arch/arm64/boot/Image.gz-dtb
           do
             if [ -f "$f" ]; then
               cp "$f" artifacts/
@@ -69,17 +126,14 @@ jobs:
             fi
           done
 
-          find arch/arm64/boot/dts \
-            -type f -name '*.dtb' \
-            -exec cp --parents {} artifacts/ \; \
-            2>/dev/null || true
-
-          if [ "$found" -ne 1 ]; then
-            echo "No recognized kernel image found"
-            ls -lah arch/arm64/boot/
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No kernel image found."
+            find out/arch/arm64/boot -maxdepth 3 -type f \
+              -print 2>/dev/null || true
             exit 1
           fi
 
+          echo "=== Kernel artifacts ==="
           find artifacts -type f -exec ls -lh {} \;
 
       - name: Upload kernel artifacts
