@@ -106,10 +106,10 @@ jobs:
             'CONFIG_ARM64=|CONFIG_DRM=|CONFIG_DRM_MSM=' \
             .config || true
 
+      
       - name: Build kernel
         run: |
           make -j"$(nproc)" \
-            O=out \
             ARCH=arm64 \
             CC=clang-14 \
             LD=ld.lld-14 \
@@ -127,9 +127,9 @@ jobs:
           found=0
 
           for f in \
-            out/arch/arm64/boot/Image \
-            out/arch/arm64/boot/Image.gz \
-            out/arch/arm64/boot/Image.gz-dtb
+            arch/arm64/boot/Image \
+            arch/arm64/boot/Image.gz \
+            arch/arm64/boot/Image.gz-dtb
           do
             if [ -f "$f" ]; then
               cp "$f" artifacts/
