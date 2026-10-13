@@ -81,19 +81,30 @@ jobs:
           echo "Selected defconfig: $config"
           echo "defconfig=$config" >> "$GITHUB_OUTPUT"
 
+      
       - name: Configure kernel
         run: |
-          mkdir -p out
+          echo "=== Verify ARM64 source ==="
+          pwd
+          ls -lah arch/arm64/ || true
 
-          make O=out ARCH=arm64 \
+          if [ ! -f arch/arm64/Makefile ]; then
+            echo "::error::arch/arm64/Makefile is missing from source"
+            echo "Checking tracked source files..."
+            git ls-files 'arch/arm64/Makefile'
+            exit 1
+          fi
+
+          echo "=== Configure kernel ==="
+          make ARCH=arm64 \
             "${{ steps.config.outputs.defconfig }}"
 
-          make O=out ARCH=arm64 olddefconfig
+          make ARCH=arm64 olddefconfig
 
           echo "=== Important configuration ==="
           grep -E \
             'CONFIG_ARM64=|CONFIG_DRM=|CONFIG_DRM_MSM=' \
-            out/.config || true
+            .config || true
 
       - name: Build kernel
         run: |
