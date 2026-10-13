@@ -613,14 +613,6 @@ struct bpf_skb_data_end {
 	void *data_end;
 };
 
-struct xdp_buff {
-	void *data;
-	void *data_end;
-	void *data_meta;
-	void *data_hard_start;
-	struct xdp_rxq_info *rxq;
-};
-
 struct bpf_redirect_info {
 	u32 ifindex;
 	u32 flags;
