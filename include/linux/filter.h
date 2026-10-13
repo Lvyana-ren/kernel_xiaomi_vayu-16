@@ -20,6 +20,7 @@
 #include <linux/set_memory.h>
 
 #include <net/sch_generic.h>
+#include <net/xdp.h>
 
 #include <uapi/linux/filter.h>
 #include <uapi/linux/bpf.h>
