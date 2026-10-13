@@ -30,7 +30,10 @@ jobs:
             lz4 zip
 
       - name: Inspect kernel source
+        shell: bash
         run: |
+          set -e
+
           echo "Repository: $GITHUB_REPOSITORY"
           echo "Branch: $GITHUB_REF_NAME"
           echo "Commit: $(git rev-parse --short HEAD)"
@@ -40,75 +43,89 @@ jobs:
             exit 1
           }
 
-          test -d arch/arm64/configs || {
-            echo "::error::ARM64 config directory missing"
+          test -f arch/arm64/Makefile || {
+            echo "::error::arch/arm64/Makefile missing"
             exit 1
           }
 
-          echo "=== Vayu-related configurations ==="
+          test -d arch/arm64/configs || {
+            echo "::error::ARM64 configs directory missing"
+            exit 1
+          }
+
+          test -f scripts/config || {
+            echo "::error::scripts/config missing"
+            exit 1
+          }
+
+          echo "=== Vayu configurations ==="
           find arch/arm64/configs -type f \
             -iname '*vayu*' -print
 
-          echo "=== Available defconfig files ==="
-          find arch/arm64/configs -type f \
-            -name '*defconfig' -print | sort
+          echo "=== BPF JIT source references ==="
+          grep -nE 'is_func|jit_data' \
+            arch/arm64/net/bpf_jit_comp.c || true
 
       - name: Select device configuration
         id: config
         shell: bash
         run: |
+          set -e
+
           mapfile -t configs < <(
             find arch/arm64/configs -type f \
               -iname '*vayu*defconfig' | sort
           )
 
           if [ "${#configs[@]}" -eq 0 ]; then
-            echo "::error::No Vayu defconfig found."
-            echo "Inspect the configuration list in the previous step."
+            echo "::error::No Vayu defconfig found"
             exit 1
           fi
 
           if [ "${#configs[@]}" -gt 1 ]; then
-            echo "::error::Multiple Vayu defconfigs found."
+            echo "::error::Multiple Vayu defconfigs found"
             printf '%s\n' "${configs[@]}"
-            echo "Stopping to avoid selecting the wrong configuration."
             exit 1
           fi
 
           config="${configs[0]#arch/arm64/configs/}"
-          config="${config%.?}"
+          config="${config%.config}"
 
           echo "Selected defconfig: $config"
           echo "defconfig=$config" >> "$GITHUB_OUTPUT"
 
-      
       - name: Configure kernel
+        shell: bash
         run: |
-          echo "=== Verify ARM64 source ==="
-          pwd
-          ls -lah arch/arm64/ || true
+          set -e
 
-          if [ ! -f arch/arm64/Makefile ]; then
-            echo "::error::arch/arm64/Makefile is missing from source"
-            echo "Checking tracked source files..."
-            git ls-files 'arch/arm64/Makefile'
-            exit 1
-          fi
-
-          echo "=== Configure kernel ==="
+          echo "=== Load Vayu defconfig ==="
           make ARCH=arm64 \
             "${{ steps.config.outputs.defconfig }}"
 
+          echo "=== Disable incompatible BPF JIT for baseline test ==="
+          scripts/config --disable BPF_JIT
+
+          echo "=== Normalize configuration ==="
           make ARCH=arm64 olddefconfig
 
-          echo "=== Important configuration ==="
+          echo "=== Verify important settings ==="
           grep -E \
-            'CONFIG_ARM64=|CONFIG_DRM=|CONFIG_DRM_MSM=' \
+            'CONFIG_ARM64=|CONFIG_BPF=|CONFIG_BPF_SYSCALL=|CONFIG_BPF_JIT=|CONFIG_DRM=|CONFIG_DRM_MSM=' \
             .config || true
 
-      
+          if grep -q '^CONFIG_BPF_JIT=y' .config; then
+            echo "::error::BPF_JIT remains enabled"
+            exit 1
+          fi
+
+          echo "=== Configuration completed ==="
+
       - name: Build kernel
+        shell: bash
         run: |
+          set -o pipefail
+
           make -j"$(nproc)" \
             ARCH=arm64 \
             CC=clang-14 \
@@ -123,6 +140,8 @@ jobs:
         if: success()
         shell: bash
         run: |
+          set -e
+
           mkdir -p artifacts
           found=0
 
@@ -138,14 +157,17 @@ jobs:
           done
 
           if [ "$found" -eq 0 ]; then
-            echo "::error::No kernel image found."
-            find out/arch/arm64/boot -maxdepth 3 -type f \
+            echo "::error::Build finished without a kernel image"
+            find arch/arm64/boot -maxdepth 3 -type f \
               -print 2>/dev/null || true
             exit 1
           fi
 
+          cp .config artifacts/kernel.config
+
           echo "=== Kernel artifacts ==="
-          find artifacts -type f -exec ls -lh {} \;
+          find artifacts -maxdepth 1 -type f \
+            -exec ls -lh {} \;
 
       - name: Upload kernel artifacts
         if: success()
